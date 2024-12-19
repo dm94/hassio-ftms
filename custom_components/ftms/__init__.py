@@ -70,25 +70,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
 
     coordinator = DataCoordinator(hass, ftms)
 
-    connected = False
     try:
         await asyncio.wait_for(ftms.connect(), timeout=10.0)
-        connected = True
     except asyncio.TimeoutError:
         raise ConfigEntryNotReady(translation_key="connection_timeout")
     except BleakError as exc:
-        if "BleakCharacteristicNotFoundError" in str(exc):
-            _LOGGER.warning("Device does not support some optional characteristics, continuing anyway")
-            connected = True
-        else:
+        if "BleakCharacteristicNotFoundError" not in str(exc):
             _LOGGER.error("Connection error: %s", exc)
             raise ConfigEntryNotReady(translation_key="connection_failed") from exc
+        _LOGGER.warning("Some characteristics not found, continuing with limited functionality")
 
-    if not connected:
-        raise ConfigEntryNotReady("Failed to establish initial connection")
+    available_features = set()
+    try:
+        reported_features = ftms.available_properties
+        _LOGGER.debug(f"Device reported features: {reported_features}")
 
-    if not ftms.machine_type or not ftms.machine_type.name:
-        raise ConfigEntryNotReady("Invalid machine type")
+        for feature in reported_features:
+            try:
+                if hasattr(ftms, feature):
+                    value = getattr(ftms, feature)
+                    if value is not None or isinstance(value, (int, float, str, bool)):
+                        available_features.add(feature)
+                        _LOGGER.debug(f"Verified feature {feature} is available")
+            except Exception as e:
+                _LOGGER.debug(f"Feature {feature} not accessible: {e}")
+
+    except Exception as e:
+        _LOGGER.warning(f"Error verifying features: {e}")
+
+    if not available_features:
+        _LOGGER.warning("No features available on device")
+    else:
+        _LOGGER.info(f"Available features: {sorted(available_features)}")
 
     unique_id = "".join(
         x for x in ftms.device_info.get("serial_number", address) if x.isalnum()
@@ -102,11 +115,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
     )
 
     selected_sensors = entry.options.get(CONF_SENSORS, [])
-    available_sensors = set(ftms.available_properties)
-    valid_sensors = [s for s in selected_sensors if s in available_sensors]
+    valid_sensors = [s for s in selected_sensors if s in available_features]
 
-    if not valid_sensors:
-        _LOGGER.warning("No valid sensors selected from available sensors: %s", available_sensors)
+    if not valid_sensors and selected_sensors:
+        _LOGGER.warning(
+            "None of the selected sensors %s are available. Available sensors: %s",
+            selected_sensors,
+            sorted(available_features)
+        )
 
     entry.runtime_data = FtmsData(
         entry_id=entry.entry_id,
