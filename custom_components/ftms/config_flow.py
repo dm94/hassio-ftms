@@ -211,7 +211,9 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
 
             if not uncompleted_task:
                 if not self._connect_task:
-                    self._connect_task = self.hass.async_create_task(self._ftms.connect())
+                    self._connect_task = self.hass.async_create_task(
+                        self._safe_connect()
+                    )
 
                 if not self._connect_task.done():
                     uncompleted_task, action = self._connect_task, "connecting"
@@ -229,7 +231,7 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
                 if not self._close_task:
                     async def close_with_timeout():
                         try:
-                            await asyncio.wait_for(self._ftms.disconnect(), timeout=30.0)
+                            await asyncio.wait_for(self._ftms.disconnect(), timeout=2.0)
                         except (asyncio.TimeoutError, Exception) as e:
                             _LOGGER.warning("Error or timeout during disconnect: %s. Forcing continuation.", str(e))
                         finally:
@@ -237,25 +239,29 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
                             
                     self._close_task = self.hass.async_create_task(close_with_timeout())
                     try:
-                        await asyncio.wait_for(self._close_task, timeout=30.0)
-                    except asyncio.TimeoutError:
-                        _LOGGER.warning("Close task timed out, forcing continuation")
-                    except Exception as e:
-                        _LOGGER.warning("Error waiting for close task: %s", str(e))
+                        await asyncio.wait_for(self._close_task, timeout=3.0)
+                    except (asyncio.TimeoutError, Exception) as e:
+                        _LOGGER.warning("Close task error: %s", str(e))
 
-                # Continuamos sin esperar más por la tarea de cierre
-                self._suggested_sensors = list(
-                    self._ftms.live_properties
-                    if self._discovery_task
-                    else self._ftms.supported_properties
-                )
+                # Continuamos independientemente del resultado del cierre
+                try:
+                    self._suggested_sensors = list(
+                        self._ftms.live_properties
+                        if self._discovery_task
+                        else self._ftms.supported_properties
+                    )
 
-                _LOGGER.debug(f"Device Information: {self._ftms.device_info}")
-                _LOGGER.debug(f"Machine type: {self._ftms.machine_type!r}")
-                _LOGGER.debug(f"Available sensors: {self._ftms.available_properties}")
-                _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
-                _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
-                _LOGGER.debug(f"Suggested sensors: {self._suggested_sensors}")
+                    _LOGGER.debug(f"Device Information: {self._ftms.device_info}")
+                    _LOGGER.debug(f"Machine type: {self._ftms.machine_type!r}")
+                    _LOGGER.debug(f"Available sensors: {self._ftms.available_properties}")
+                    _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
+                    _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
+                    _LOGGER.debug(f"Suggested sensors: {self._suggested_sensors}")
+
+                except Exception as e:
+                    _LOGGER.warning("Error getting device properties: %s", str(e))
+                    # Usar propiedades mínimas si hay error
+                    self._suggested_sensors = []
 
                 return self.async_show_progress_done(next_step_id="information")
 
@@ -269,6 +275,17 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
         except Exception as e:
             _LOGGER.error("Error in BLE request step: %s", str(e))
             return self.async_abort(reason="cannot_connect")
+
+    async def _safe_connect(self) -> None:
+        """Safe connect with error handling."""
+        try:
+            await self._ftms.connect()
+        except Exception as e:
+            _LOGGER.warning("Error during connect: %s", str(e))
+            # Continuamos incluso si hay errores en características opcionales
+            if "BleakCharacteristicNotFoundError" in str(e):
+                return None
+            raise
 
     async def async_step_information(self, user_input=None):
         assert self._ftms
