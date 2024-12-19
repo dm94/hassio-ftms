@@ -243,7 +243,6 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
                     except (asyncio.TimeoutError, Exception) as e:
                         _LOGGER.warning("Close task error: %s", str(e))
 
-                # Continuamos independientemente del resultado del cierre
                 try:
                     self._suggested_sensors = list(
                         self._ftms.live_properties
@@ -254,13 +253,21 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
                     _LOGGER.debug(f"Device Information: {self._ftms.device_info}")
                     _LOGGER.debug(f"Machine type: {self._ftms.machine_type!r}")
                     _LOGGER.debug(f"Available sensors: {self._ftms.available_properties}")
-                    _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
-                    _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
+                    
+                    try:
+                        _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
+                    except AttributeError:
+                        _LOGGER.debug("No supported settings available")
+                    
+                    try:
+                        _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
+                    except AttributeError:
+                        _LOGGER.debug("No supported ranges available")
+                    
                     _LOGGER.debug(f"Suggested sensors: {self._suggested_sensors}")
 
                 except Exception as e:
                     _LOGGER.warning("Error getting device properties: %s", str(e))
-                    # Usar propiedades mínimas si hay error
                     self._suggested_sensors = []
 
                 return self.async_show_progress_done(next_step_id="information")
@@ -282,7 +289,6 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
             await self._ftms.connect()
         except Exception as e:
             _LOGGER.warning("Error during connect: %s", str(e))
-            # Continuamos incluso si hay errores en características opcionales
             if "BleakCharacteristicNotFoundError" in str(e):
                 return None
             raise
