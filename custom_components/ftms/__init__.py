@@ -1,6 +1,7 @@
 """The FTMS integration."""
 
 import logging
+import asyncio
 
 import pyftms
 from bleak.exc import BleakError
@@ -54,9 +55,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
 
     def _on_disconnect(ftms_: pyftms.FitnessMachine) -> None:
         """Disconnect handler. Reload entry on disconnect."""
-
+        
         if ftms_.need_connect:
-            hass.config_entries.async_schedule_reload(entry.entry_id)
+            _LOGGER.debug("Device disconnected, scheduling reconnection...")
+            coordinator.connection_lost()
+            
+            async def delayed_reload():
+                await asyncio.sleep(5)
+                if hass.is_running:
+                    hass.config_entries.async_schedule_reload(entry.entry_id)
+            
+            hass.async_create_task(delayed_reload())
 
     try:
         ftms = pyftms.get_client(
@@ -70,19 +79,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
 
     coordinator = DataCoordinator(hass, ftms)
 
-    try:
-        await ftms.connect()
-
-    except BleakError as exc:
-        raise ConfigEntryNotReady(translation_key="connection_failed") from exc
+    retry_count = 0
+    max_retries = 3
+    
+    while retry_count < max_retries:
+        try:
+            await asyncio.wait_for(ftms.connect(), timeout=10.0)
+            break
+        except asyncio.TimeoutError:
+            retry_count += 1
+            if retry_count >= max_retries:
+                raise ConfigEntryNotReady(translation_key="connection_timeout")
+            _LOGGER.warning(f"Connection attempt {retry_count} timed out, retrying...")
+            await asyncio.sleep(2)
+        except BleakError as exc:
+            _LOGGER.error(f"Connection error: {exc}")
+            raise ConfigEntryNotReady(translation_key="connection_failed") from exc
 
     assert ftms.machine_type.name
 
-    _LOGGER.debug(f"Device Information: {ftms.device_info}")
-    _LOGGER.debug(f"Machine type: {ftms.machine_type.name}")
-    _LOGGER.debug(f"Available sensors: {ftms.available_properties}")
-    _LOGGER.debug(f"Supported settings: {ftms.supported_settings}")
-    _LOGGER.debug(f"Supported ranges: {ftms.supported_ranges}")
+    try:
+        _LOGGER.debug(f"Device Information: {ftms.device_info}")
+        _LOGGER.debug(f"Machine type: {ftms.machine_type.name}")
+        _LOGGER.debug(f"Available sensors: {ftms.available_properties}")
+        
+        try:
+            _LOGGER.debug(f"Supported settings: {ftms.supported_settings}")
+        except AttributeError:
+            _LOGGER.debug("No supported settings available")
+        
+        try:
+            _LOGGER.debug(f"Supported ranges: {ftms.supported_ranges}")
+        except AttributeError:
+            _LOGGER.debug("No supported ranges available")
+
+    except Exception as e:
+        _LOGGER.warning(f"Error getting device properties: {e}")
 
     unique_id = "".join(
         x for x in ftms.device_info.get("serial_number", address) if x.isalnum()
