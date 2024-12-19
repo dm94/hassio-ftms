@@ -64,7 +64,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
             srv_info.device,
             srv_info.advertisement,
             on_disconnect=_on_disconnect,
-            skip_optional_characteristics=True,
         )
     except pyftms.NotFitnessMachineError:
         raise ConfigEntryNotReady(translation_key="ftms_error")
@@ -88,7 +87,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
     if not connected:
         raise ConfigEntryNotReady("Failed to establish initial connection")
 
-    assert ftms.machine_type.name
+    if not ftms.machine_type or not ftms.machine_type.name:
+        raise ConfigEntryNotReady("Invalid machine type")
 
     unique_id = "".join(
         x for x in ftms.device_info.get("serial_number", address) if x.isalnum()
@@ -101,13 +101,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
         **ftms.device_info,
     )
 
+    selected_sensors = entry.options.get(CONF_SENSORS, [])
+    available_sensors = set(ftms.available_properties)
+    valid_sensors = [s for s in selected_sensors if s in available_sensors]
+
+    if not valid_sensors:
+        _LOGGER.warning("No valid sensors selected from available sensors: %s", available_sensors)
+
     entry.runtime_data = FtmsData(
         entry_id=entry.entry_id,
         unique_id=unique_id,
         device_info=device_info,
         ftms=ftms,
         coordinator=coordinator,
-        sensors=entry.options[CONF_SENSORS],
+        sensors=valid_sensors,
     )
 
     @callback
