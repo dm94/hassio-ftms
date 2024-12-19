@@ -201,57 +201,70 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """BLE connection step."""
+        
+        try:
+            if self._ftms is None:
+                assert (info := self._ble_info)
+                self._ftms = get_client(info.device, info.advertisement)
 
-        if self._ftms is None:
-            assert (info := self._ble_info)
-            self._ftms = get_client(info.device, info.advertisement)
+            uncompleted_task: asyncio.Task[None] | None = None
 
-        uncompleted_task: asyncio.Task[None] | None = None
+            if not uncompleted_task:
+                if not self._connect_task:
+                    self._connect_task = self.hass.async_create_task(self._ftms.connect())
 
-        if not uncompleted_task:
-            if not self._connect_task:
-                self._connect_task = self.hass.async_create_task(self._ftms.connect())
+                if not self._connect_task.done():
+                    uncompleted_task, action = self._connect_task, "connecting"
 
-            if not self._connect_task.done():
-                uncompleted_task, action = self._connect_task, "connecting"
+            if not uncompleted_task:
+                if self._discovery_time:
+                    if not self._discovery_task:
+                        coro = asyncio.sleep(self._discovery_time)
+                        self._discovery_task = self.hass.async_create_task(coro)
 
-        if not uncompleted_task:
-            if self._discovery_time:
-                if not self._discovery_task:
-                    coro = asyncio.sleep(self._discovery_time)
-                    self._discovery_task = self.hass.async_create_task(coro)
+                    if not self._discovery_task.done():
+                        uncompleted_task, action = self._discovery_task, "discovering"
 
-                if not self._discovery_task.done():
-                    uncompleted_task, action = self._discovery_task, "discovering"
+            if not uncompleted_task:
+                if not self._close_task:
+                    async def close_with_timeout():
+                        try:
+                            await asyncio.wait_for(self._ftms.disconnect(), timeout=60.0)
+                        except asyncio.TimeoutError:
+                            _LOGGER.warning("Disconnect timed out, continuing anyway")
+                        except Exception as e:
+                            _LOGGER.warning("Error during disconnect: %s", str(e))
+                            
+                    self._close_task = self.hass.async_create_task(close_with_timeout())
 
-        if not uncompleted_task:
-            if not self._close_task:
-                self._close_task = self.hass.async_create_task(self._ftms.disconnect())
+                if not self._close_task.done():
+                    uncompleted_task, action = self._close_task, "closing"
 
-            if not self._close_task.done():
-                uncompleted_task, action = self._close_task, "closing"
+            if uncompleted_task:
+                return self.async_show_progress(
+                    step_id="ble_request",
+                    progress_action=action,
+                    progress_task=uncompleted_task,
+                )
 
-        if uncompleted_task:
-            return self.async_show_progress(
-                step_id="ble_request",
-                progress_action=action,
-                progress_task=uncompleted_task,
+            self._suggested_sensors = list(
+                self._ftms.live_properties
+                if self._discovery_task
+                else self._ftms.supported_properties
             )
 
-        self._suggested_sensors = list(
-            self._ftms.live_properties
-            if self._discovery_task
-            else self._ftms.supported_properties
-        )
+            _LOGGER.debug(f"Device Information: {self._ftms.device_info}")
+            _LOGGER.debug(f"Machine type: {self._ftms.machine_type!r}")
+            _LOGGER.debug(f"Available sensors: {self._ftms.available_properties}")
+            _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
+            _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
+            _LOGGER.debug(f"Suggested sensors: {self._suggested_sensors}")
 
-        _LOGGER.debug(f"Device Information: {self._ftms.device_info}")
-        _LOGGER.debug(f"Machine type: {self._ftms.machine_type!r}")
-        _LOGGER.debug(f"Available sensors: {self._ftms.available_properties}")
-        _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
-        _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
-        _LOGGER.debug(f"Suggested sensors: {self._suggested_sensors}")
+            return self.async_show_progress_done(next_step_id="information")
 
-        return self.async_show_progress_done(next_step_id="information")
+        except Exception as e:
+            _LOGGER.error("Error in BLE request step: %s", str(e))
+            return self.async_abort(reason="cannot_connect")
 
     async def async_step_information(self, user_input=None):
         assert self._ftms
