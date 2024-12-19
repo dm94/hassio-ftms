@@ -22,12 +22,13 @@ class DataCoordinator(DataUpdateCoordinator[FtmsEvents]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=2),
+            update_interval=timedelta(seconds=30),
         )
         
         self.ftms = ftms
         self._last_event: FtmsEvents | None = None
         self._connected = False
+        self._last_successful_update = None
 
         def _on_ftms_event(data: FtmsEvents):
             """Handle FTMS events."""
@@ -45,31 +46,40 @@ class DataCoordinator(DataUpdateCoordinator[FtmsEvents]):
         """Update data."""
         try:
             if not self._connected:
-                _LOGGER.debug("No connection detected, attempting to reconnect...")
+                _LOGGER.debug("Attempting to connect for data update...")
                 try:
                     await self.ftms.connect()
                     self._connected = True
+                    _LOGGER.debug("Connected successfully")
                 except Exception as e:
                     if "BleakCharacteristicNotFoundError" in str(e):
                         self._connected = True
                         _LOGGER.debug("Device does not support some characteristics, continuing anyway")
                     else:
-                        _LOGGER.warning(f"Reconnection failed: {e}")
-                        raise ConfigEntryNotReady("Device disconnected and reconnection failed")
+                        _LOGGER.debug(f"Connection attempt failed: {e}")
+                        return self._last_event or FtmsEvents()
 
-            return self._last_event or FtmsEvents()
+            try:
+                if self._last_event:
+                    return self._last_event
+                return FtmsEvents()
+            finally:
+                try:
+                    await self.ftms.disconnect()
+                    _LOGGER.debug("Disconnected after data update")
+                except Exception as e:
+                    _LOGGER.debug(f"Error during disconnect: {e}")
+                self._connected = False
 
         except Exception as e:
-            if "BleakCharacteristicNotFoundError" not in str(e):
-                _LOGGER.error(f"Error updating data: {e}")
-                self._connected = False
-                raise
+            _LOGGER.error(f"Error in update cycle: {e}")
             return self._last_event or FtmsEvents()
 
     def connection_lost(self):
         """Mark connection as lost."""
-        self._connected = False
-        _LOGGER.debug("Connection marked as lost")
+        if self._connected:
+            self._connected = False
+            _LOGGER.debug("Connection marked as lost")
 
     def is_connected(self) -> bool:
         """Return connection status."""

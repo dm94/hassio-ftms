@@ -55,26 +55,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
 
     def _on_disconnect(ftms_: pyftms.FitnessMachine) -> None:
         """Disconnect handler."""
-        if ftms_.need_connect and hass.is_running:
-            _LOGGER.debug("Device disconnected, scheduling reconnection...")
+        if ftms_.need_connect:
+            _LOGGER.debug("Device disconnected")
             coordinator.connection_lost()
-            
-            if not hasattr(_on_disconnect, "reload_scheduled"):
-                _on_disconnect.reload_scheduled = True
-                
-                async def delayed_reload():
-                    try:
-                        await asyncio.sleep(5)
-                        if hass.is_running:
-                            entry_id = entry.entry_id
-                            if hass.config_entries.async_get_entry(entry_id):
-                                hass.config_entries.async_schedule_reload(entry_id)
-                    except Exception as e:
-                        _LOGGER.error("Error in delayed reload: %s", e)
-                    finally:
-                        delattr(_on_disconnect, "reload_scheduled")
-                
-                hass.async_create_task(delayed_reload())
 
     try:
         ftms = pyftms.get_client(
@@ -103,17 +86,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
     try:
         _LOGGER.debug(f"Device Information: {ftms.device_info}")
         _LOGGER.debug(f"Machine type: {ftms.machine_type.name}")
-        _LOGGER.debug(f"Available sensors: {ftms.available_properties}")
+        
+        features = ftms.available_properties
+        _LOGGER.debug(f"Available features: {features}")
         
         try:
-            _LOGGER.debug(f"Supported settings: {ftms.supported_settings}")
+            settings = ftms.supported_settings
+            _LOGGER.debug(f"Supported settings: {settings}")
+            
+            for setting in settings:
+                try:
+                    range_info = getattr(ftms, f"{setting.lower()}_range", None)
+                    if range_info:
+                        _LOGGER.debug(f"{setting} range: {range_info}")
+                except AttributeError:
+                    _LOGGER.debug(f"No range information for {setting}")
+                        
         except AttributeError:
             _LOGGER.debug("No supported settings available")
         
-        try:
-            _LOGGER.debug(f"Supported ranges: {ftms.supported_ranges}")
-        except AttributeError:
-            _LOGGER.debug("No supported ranges available")
+        for feature in features:
+            try:
+                attr_name = feature.lower()
+                if hasattr(ftms, attr_name):
+                    value = getattr(ftms, attr_name)
+                    _LOGGER.debug(f"Feature {feature} current value: {value}")
+            except AttributeError:
+                _LOGGER.debug(f"Feature {feature} declared but not accessible")
 
     except Exception as e:
         _LOGGER.warning(f"Error getting device properties: {e}")
