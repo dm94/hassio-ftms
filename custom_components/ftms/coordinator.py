@@ -46,33 +46,20 @@ class DataCoordinator(DataUpdateCoordinator[FtmsEvents]):
         """Update data."""
         try:
             if not self._connected:
-                _LOGGER.debug("Attempting to connect for data update...")
                 try:
                     await self.ftms.connect()
                     self._connected = True
-                    _LOGGER.debug("Connected successfully")
                 except Exception as e:
                     if "BleakCharacteristicNotFoundError" in str(e):
                         self._connected = True
-                        _LOGGER.debug("Device does not support some characteristics, continuing anyway")
                     else:
                         _LOGGER.debug(f"Connection attempt failed: {e}")
                         return self._last_event or FtmsEvents()
 
-            try:
-                if self._last_event:
-                    return self._last_event
-                return FtmsEvents()
-            finally:
-                try:
-                    await self.ftms.disconnect()
-                    _LOGGER.debug("Disconnected after data update")
-                except Exception as e:
-                    _LOGGER.debug(f"Error during disconnect: {e}")
-                self._connected = False
+            return self._last_event or FtmsEvents()
 
         except Exception as e:
-            _LOGGER.error(f"Error in update cycle: {e}")
+            _LOGGER.debug(f"Error in update cycle: {e}")
             return self._last_event or FtmsEvents()
 
     def connection_lost(self):

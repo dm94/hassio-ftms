@@ -64,64 +64,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
             srv_info.device,
             srv_info.advertisement,
             on_disconnect=_on_disconnect,
+            skip_optional_characteristics=True,
         )
     except pyftms.NotFitnessMachineError:
         raise ConfigEntryNotReady(translation_key="ftms_error")
 
     coordinator = DataCoordinator(hass, ftms)
 
+    connected = False
     try:
         await asyncio.wait_for(ftms.connect(), timeout=10.0)
+        connected = True
     except asyncio.TimeoutError:
         raise ConfigEntryNotReady(translation_key="connection_timeout")
     except BleakError as exc:
         if "BleakCharacteristicNotFoundError" in str(exc):
-            _LOGGER.warning("Device does not support some characteristics, continuing anyway")
+            _LOGGER.warning("Device does not support some optional characteristics, continuing anyway")
+            connected = True
         else:
             _LOGGER.error("Connection error: %s", exc)
             raise ConfigEntryNotReady(translation_key="connection_failed") from exc
 
+    if not connected:
+        raise ConfigEntryNotReady("Failed to establish initial connection")
+
     assert ftms.machine_type.name
-
-    try:
-        _LOGGER.debug(f"Device Information: {ftms.device_info}")
-        _LOGGER.debug(f"Machine type: {ftms.machine_type.name}")
-        
-        features = ftms.available_properties
-        _LOGGER.debug(f"Available features: {features}")
-        
-        try:
-            settings = ftms.supported_settings
-            _LOGGER.debug(f"Supported settings: {settings}")
-            
-            for setting in settings:
-                try:
-                    range_info = getattr(ftms, f"{setting.lower()}_range", None)
-                    if range_info:
-                        _LOGGER.debug(f"{setting} range: {range_info}")
-                except AttributeError:
-                    _LOGGER.debug(f"No range information for {setting}")
-                        
-        except AttributeError:
-            _LOGGER.debug("No supported settings available")
-        
-        for feature in features:
-            try:
-                attr_name = feature.lower()
-                if hasattr(ftms, attr_name):
-                    value = getattr(ftms, attr_name)
-                    _LOGGER.debug(f"Feature {feature} current value: {value}")
-            except AttributeError:
-                _LOGGER.debug(f"Feature {feature} declared but not accessible")
-
-    except Exception as e:
-        _LOGGER.warning(f"Error getting device properties: {e}")
 
     unique_id = "".join(
         x for x in ftms.device_info.get("serial_number", address) if x.isalnum()
     ).lower()
-
-    _LOGGER.debug(f"Registered new FTMS device. UniqueID is '{unique_id}'.")
 
     device_info = dr.DeviceInfo(
         connections={(dr.CONNECTION_BLUETOOTH, ftms.address)},
@@ -145,7 +116,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
         change: bluetooth.BluetoothChange,
     ) -> None:
         """Update from a ble callback."""
-
         ftms.set_ble_device_and_advertisement_data(
             srv_info.device, srv_info.advertisement
         )
@@ -155,23 +125,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
             hass,
             _async_on_ble_event,
             BluetoothCallbackMatcher(address=address),
-            bluetooth.BluetoothScanningMode.ACTIVE,
+            bluetooth.BluetoothScanningMode.PASSIVE,
         )
     )
 
-    # Platforms initialization
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     entry.async_on_unload(entry.add_update_listener(_async_entry_update_handler))
-
-    async def _async_hass_stop_handler(event: Event) -> None:
-        """Close the connection."""
-
-        await ftms.disconnect()
-
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_hass_stop_handler)
-    )
 
     return True
 
