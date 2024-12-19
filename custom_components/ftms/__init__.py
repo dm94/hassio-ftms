@@ -54,18 +54,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
         raise ConfigEntryNotReady(translation_key="device_not_found")
 
     def _on_disconnect(ftms_: pyftms.FitnessMachine) -> None:
-        """Disconnect handler. Reload entry on disconnect."""
-        
-        if ftms_.need_connect:
+        """Disconnect handler."""
+        if ftms_.need_connect and hass.is_running:
             _LOGGER.debug("Device disconnected, scheduling reconnection...")
             coordinator.connection_lost()
             
-            async def delayed_reload():
-                await asyncio.sleep(5)
-                if hass.is_running:
-                    hass.config_entries.async_schedule_reload(entry.entry_id)
-            
-            hass.async_create_task(delayed_reload())
+            if not hasattr(_on_disconnect, "reload_scheduled"):
+                _on_disconnect.reload_scheduled = True
+                
+                async def delayed_reload():
+                    try:
+                        await asyncio.sleep(5)
+                        if hass.is_running:
+                            entry_id = entry.entry_id
+                            if hass.config_entries.async_get_entry(entry_id):
+                                hass.config_entries.async_schedule_reload(entry_id)
+                    except Exception as e:
+                        _LOGGER.error("Error in delayed reload: %s", e)
+                    finally:
+                        delattr(_on_disconnect, "reload_scheduled")
+                
+                hass.async_create_task(delayed_reload())
 
     try:
         ftms = pyftms.get_client(
@@ -73,27 +82,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: FtmsConfigEntry) -> bool
             srv_info.advertisement,
             on_disconnect=_on_disconnect,
         )
-
     except pyftms.NotFitnessMachineError:
         raise ConfigEntryNotReady(translation_key="ftms_error")
 
     coordinator = DataCoordinator(hass, ftms)
 
-    retry_count = 0
-    max_retries = 3
-    
-    while retry_count < max_retries:
-        try:
-            await asyncio.wait_for(ftms.connect(), timeout=10.0)
-            break
-        except asyncio.TimeoutError:
-            retry_count += 1
-            if retry_count >= max_retries:
-                raise ConfigEntryNotReady(translation_key="connection_timeout")
-            _LOGGER.warning(f"Connection attempt {retry_count} timed out, retrying...")
-            await asyncio.sleep(2)
-        except BleakError as exc:
-            _LOGGER.error(f"Connection error: {exc}")
+    try:
+        await asyncio.wait_for(ftms.connect(), timeout=10.0)
+    except asyncio.TimeoutError:
+        raise ConfigEntryNotReady(translation_key="connection_timeout")
+    except BleakError as exc:
+        if "BleakCharacteristicNotFoundError" in str(exc):
+            _LOGGER.warning("Device does not support some characteristics, continuing anyway")
+        else:
+            _LOGGER.error("Connection error: %s", exc)
             raise ConfigEntryNotReady(translation_key="connection_failed") from exc
 
     assert ftms.machine_type.name

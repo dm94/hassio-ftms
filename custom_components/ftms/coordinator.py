@@ -50,15 +50,21 @@ class DataCoordinator(DataUpdateCoordinator[FtmsEvents]):
                     await self.ftms.connect()
                     self._connected = True
                 except Exception as e:
-                    _LOGGER.warning(f"Reconnection failed: {e}")
-                    raise ConfigEntryNotReady("Device disconnected and reconnection failed")
+                    if "BleakCharacteristicNotFoundError" in str(e):
+                        self._connected = True
+                        _LOGGER.debug("Device does not support some characteristics, continuing anyway")
+                    else:
+                        _LOGGER.warning(f"Reconnection failed: {e}")
+                        raise ConfigEntryNotReady("Device disconnected and reconnection failed")
 
             return self._last_event or FtmsEvents()
 
         except Exception as e:
-            _LOGGER.error(f"Error updating data: {e}")
-            self._connected = False
-            raise
+            if "BleakCharacteristicNotFoundError" not in str(e):
+                _LOGGER.error(f"Error updating data: {e}")
+                self._connected = False
+                raise
+            return self._last_event or FtmsEvents()
 
     def connection_lost(self):
         """Mark connection as lost."""
