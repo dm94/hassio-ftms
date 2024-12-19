@@ -229,16 +229,35 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
                 if not self._close_task:
                     async def close_with_timeout():
                         try:
-                            await asyncio.wait_for(self._ftms.disconnect(), timeout=60.0)
-                        except asyncio.TimeoutError:
-                            _LOGGER.warning("Disconnect timed out, continuing anyway")
-                        except Exception as e:
-                            _LOGGER.warning("Error during disconnect: %s", str(e))
+                            await asyncio.wait_for(self._ftms.disconnect(), timeout=30.0)
+                        except (asyncio.TimeoutError, Exception) as e:
+                            _LOGGER.warning("Error or timeout during disconnect: %s. Forcing continuation.", str(e))
+                        finally:
+                            return None
                             
                     self._close_task = self.hass.async_create_task(close_with_timeout())
+                    try:
+                        await asyncio.wait_for(self._close_task, timeout=30.0)
+                    except asyncio.TimeoutError:
+                        _LOGGER.warning("Close task timed out, forcing continuation")
+                    except Exception as e:
+                        _LOGGER.warning("Error waiting for close task: %s", str(e))
 
-                if not self._close_task.done():
-                    uncompleted_task, action = self._close_task, "closing"
+                # Continuamos sin esperar más por la tarea de cierre
+                self._suggested_sensors = list(
+                    self._ftms.live_properties
+                    if self._discovery_task
+                    else self._ftms.supported_properties
+                )
+
+                _LOGGER.debug(f"Device Information: {self._ftms.device_info}")
+                _LOGGER.debug(f"Machine type: {self._ftms.machine_type!r}")
+                _LOGGER.debug(f"Available sensors: {self._ftms.available_properties}")
+                _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
+                _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
+                _LOGGER.debug(f"Suggested sensors: {self._suggested_sensors}")
+
+                return self.async_show_progress_done(next_step_id="information")
 
             if uncompleted_task:
                 return self.async_show_progress(
@@ -246,21 +265,6 @@ class FTMSConfigFlow(ConfigFlow, domain=DOMAIN):
                     progress_action=action,
                     progress_task=uncompleted_task,
                 )
-
-            self._suggested_sensors = list(
-                self._ftms.live_properties
-                if self._discovery_task
-                else self._ftms.supported_properties
-            )
-
-            _LOGGER.debug(f"Device Information: {self._ftms.device_info}")
-            _LOGGER.debug(f"Machine type: {self._ftms.machine_type!r}")
-            _LOGGER.debug(f"Available sensors: {self._ftms.available_properties}")
-            _LOGGER.debug(f"Supported settings: {self._ftms.supported_settings}")
-            _LOGGER.debug(f"Supported ranges: {self._ftms.supported_ranges}")
-            _LOGGER.debug(f"Suggested sensors: {self._suggested_sensors}")
-
-            return self.async_show_progress_done(next_step_id="information")
 
         except Exception as e:
             _LOGGER.error("Error in BLE request step: %s", str(e))
